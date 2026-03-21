@@ -1,137 +1,198 @@
-""" 
-The following code is for educational purposes only! 
-This code scrapes the financial information from 100 companies, 
-and then ranks them in ascending order in accordance with 3 predefined criterias, 
-which will be defined later in the code. 
-"""
-
+import logging
+import time
 import pandas as pd
 import yfinance as yf
 import numpy as np
 import requests
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
-pd.set_option('display.max_rows', 10)
-
-def safe_get(df, row_name, col_index, default=np.nan):
-    if df is None or df.empty:
-        return default
-
-    if row_name in df.index and col_index < len(df.columns):
-        val = df.loc[row_name].iloc[col_index]
-        return default if pd.isna(val) else val
-    return default
-
-def fetch_ticker(ticker):
-    try:
-        cpy = yf.Ticker(ticker)
-        bs = cpy.balance_sheet
-        inc = cpy.income_stmt
-        cfs = cpy.cashflow
-
-        # Compile the current and prior-year financial data into a structured record
-        return {
-            "tickers": ticker,
-            "date": bs.columns[0] if not bs.empty and len(bs.columns) > 0 else np.nan,
-            "date_yb": bs.columns[1] if not bs.empty and len(bs.columns) > 1 else np.nan,
-
-            "totalAssets": safe_get(bs, "Total Assets", 0),
-            "totalRevenue": safe_get(inc, "Total Revenue", 0),
-            "totalRevenue_yb": safe_get(inc, "Total Revenue", 1),
-            "netIncome": safe_get(inc, "Net Income", 0),
-            "netIncome_yb": safe_get(inc, "Net Income", 1),
-
-            "capEx": safe_get(cfs, "Capital Expenditure", 0, default=0),
-            "capEx_yb": safe_get(cfs, "Capital Expenditure", 1, default=0),
-            "depAmor": safe_get(cfs, "Depreciation And Amortization", 0, default=0),
-            "depAmor_yb": safe_get(cfs, "Depreciation And Amortization", 1, default=0),
-
-            "goodwill": safe_get(bs, "Goodwill", 0, default=0),
-            "goodwill_yb": safe_get(bs, "Goodwill", 1, default=0),
-            "otherIntang": safe_get(bs, "Other Intangible Assets", 0, default=0),
-            "otherIntang_yb": safe_get(bs, "Other Intangible Assets", 1, default=0)
-        }
-
-    except Exception as e:
-        print(f"  -> Error processing {ticker}: {e}. Filling with blanks.")
-        return {
-            "tickers": ticker, "date": np.nan, "date_yb": np.nan,
-            "totalAssets": np.nan, "totalRevenue": np.nan, "totalRevenue_yb": np.nan,
-            "netIncome": np.nan, "netIncome_yb": np.nan,
-            "capEx": np.nan, "capEx_yb": np.nan, "depAmor": np.nan, "depAmor_yb": np.nan,
-            "goodwill": np.nan, "goodwill_yb": np.nan, "otherIntang": np.nan, "otherIntang_yb": np.nan
-        }
-
-# Get SEC Data
-headers = {'User-Agent': "christofferdej.acct@gmail.com"}
-companyTickers = requests.get(
-    "https://www.sec.gov/files/company_tickers.json",
-    headers=headers
+from models import (
+    Company,
+    BalanceSheetAnnual, IncomeStatementAnnual, CashFlowAnnual,
+    BalanceSheetQuarterly, IncomeStatementQuarterly, CashFlowQuarterly,
 )
 
-companyData = pd.DataFrame.from_dict(companyTickers.json(), orient='index')
-companyData['cik_str'] = companyData['cik_str'].astype(str).str.zfill(10)
-
-tickers = companyData["ticker"][0:10].tolist()
+logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 50
 WORKERS = 5
 DELAY_BETWEEN_BATCHES = 2  # seconds
 
-financial_data = []
-for i in range(0, len(tickers), BATCH_SIZE):
-    batch = tickers[i:i + BATCH_SIZE]
-    print(f"Fetching tickers {i+1}–{i+len(batch)} of {len(tickers)}...")
-    with ThreadPoolExecutor(max_workers=WORKERS) as executor:
-        financial_data.extend(executor.map(fetch_ticker, batch))
-    if i + BATCH_SIZE < len(tickers):
-        time.sleep(DELAY_BETWEEN_BATCHES)
-    
-df = pd.DataFrame(financial_data)
-df.set_index("tickers", inplace=True)
 
-df.dropna(axis=0, inplace=True)
-df["fcf"] = (df["netIncome"] + df["depAmor"] + df["capEx"])
-df["fcf_yb"] = (df["netIncome_yb"] + df["depAmor_yb"] + df["capEx_yb"])
-df["ROA"] = round((df["fcf"] / (df["totalAssets"] - df["goodwill"] - df["otherIntang_yb"])) * 100, 1)
+def safe_get(df, row_name, col_index, default=None):
+    if df is None or df.empty:
+        return default
+    if row_name in df.index and col_index < len(df.columns):
+        val = df.loc[row_name].iloc[col_index]
+        return default if pd.isna(val) else float(val)
+    return default
 
-filt = (df["fcf"] > 0)
-df = df[filt]
-filt1 = (df["fcf_yb"] > 0)
-df = df[filt1]
-filt2 = (df["fcf"] > df["fcf_yb"])
-df = df[filt2]
-filt3 = (df["totalRevenue"] > df["totalRevenue_yb"]) 
-df = df[filt3]
 
-df["fcf_growth"] = round(((df["fcf"] - df["fcf_yb"]) / df["fcf_yb"]) * 100, 1) 
-df["revenue_growth"] = round(((df["totalRevenue"] - df["totalRevenue_yb"]) / df["totalRevenue_yb"]) * 100, 1)
+def is_valid_row(bs, inc, cfs, i):
+    critical_fields = [
+        safe_get(bs, "Total Assets", i),
+        safe_get(inc, "Total Revenue", i),
+        safe_get(inc, "Net Income", i),
+    ]
+    return any(v is not None for v in critical_fields)
 
-df["ROA_rank"] = df["ROA"].rank(ascending=False) 
-df["revenue_rank"] = df["revenue_growth"].rank(ascending=False) 
-df["fcf_rank"] = df["fcf_growth"].rank(ascending=False)
 
-df["points"] = df["ROA_rank"] + df["revenue_rank"] + df["fcf_rank"] 
-df = df.sort_values(by="points", ascending=True)
-df["ranking"] = range(1, len(df) + 1)
+def fetch_ticker(ticker, name, cik):
+    try:
+        cpy = yf.Ticker(ticker)
 
-df = df[["date", "date_yb", "revenue_growth", "fcf_growth", "ROA", "ranking"]]
-pd.set_option('display.max_rows', 100)
+        bs    = cpy.balance_sheet
+        inc   = cpy.income_stmt
+        cfs   = cpy.cashflow
+        bs_q  = cpy.quarterly_balance_sheet
+        inc_q = cpy.quarterly_income_stmt
+        cfs_q = cpy.quarterly_cashflow
 
-"""
-Of the 100 companies that were scrapped, 47 are left
-after the code have filtered through companies
-that dident meet certain creteria, like for example having negative free cash 
-flow or having missing values.
-Is has then ranked all these companies by 3 creterias, these were:
-1) Free cash flow growth: Compares how much the Free Cash Clow has grown from
-   the year before in percent
-2) Revenue growth : Comapares how much the Revenue has grown from the year
-   before in percent
-3) Return on Assets(ROA): Free cash flow / assets --> expressed as a percent
-   
-The program then sorts the companies by whose got the best combination of 
-these creterias in ascending order. Scroll down to see result. 
-"""
-print(df.head())
+        result = {
+            "company": Company(ticker=ticker, name=name, cik=cik),
+            "balance_sheet_annual":       [],
+            "income_statement_annual":    [],
+            "cash_flow_annual":           [],
+            "balance_sheet_quarterly":    [],
+            "income_statement_quarterly": [],
+            "cash_flow_quarterly":        [],
+        }
+
+        # --- Annual ---
+        num_years = len(bs.columns) if bs is not None and not bs.empty else 0
+        for i in range(num_years):
+            if not is_valid_row(bs, inc, cfs, i):
+                logger.debug("Skipping %s annual year %d — no critical data", ticker, i)
+                continue
+            fiscal_year = bs.columns[i].date()
+
+            result["balance_sheet_annual"].append(BalanceSheetAnnual(
+                ticker=ticker,
+                fiscal_year=fiscal_year,
+                total_assets=safe_get(bs, "Total Assets", i),
+                total_liabilities=safe_get(bs, "Total Liabilities Net Minority Interest", i),
+                shareholders_equity=safe_get(bs, "Stockholders Equity", i),
+                current_assets=safe_get(bs, "Current Assets", i),
+                current_liabilities=safe_get(bs, "Current Liabilities", i),
+                cash=safe_get(bs, "Cash And Cash Equivalents", i),
+                inventory=safe_get(bs, "Inventory", i),
+                accounts_receivable=safe_get(bs, "Accounts Receivable", i),
+                total_debt=safe_get(bs, "Total Debt", i),
+                goodwill=safe_get(bs, "Goodwill", i),
+                other_intangible_assets=safe_get(bs, "Other Intangible Assets", i),
+            ))
+
+            result["income_statement_annual"].append(IncomeStatementAnnual(
+                ticker=ticker,
+                fiscal_year=fiscal_year,
+                total_revenue=safe_get(inc, "Total Revenue", i),
+                cost_of_revenue=safe_get(inc, "Cost Of Revenue", i),
+                gross_profit=safe_get(inc, "Gross Profit", i),
+                research_and_development=safe_get(inc, "Research And Development", i),
+                operating_income=safe_get(inc, "Operating Income", i),
+                ebitda=safe_get(inc, "EBITDA", i),
+                net_income=safe_get(inc, "Net Income", i),
+                interest_expense=safe_get(inc, "Interest Expense", i),
+                tax_provision=safe_get(inc, "Tax Provision", i),
+                basic_eps=safe_get(inc, "Basic EPS", i),
+                diluted_eps=safe_get(inc, "Diluted EPS", i),
+            ))
+
+            result["cash_flow_annual"].append(CashFlowAnnual(
+                ticker=ticker,
+                fiscal_year=fiscal_year,
+                operating_cash_flow=safe_get(cfs, "Operating Cash Flow", i),
+                capital_expenditure=safe_get(cfs, "Capital Expenditure", i),
+                depreciation_amortization=safe_get(cfs, "Depreciation And Amortization", i),
+                free_cash_flow=safe_get(cfs, "Free Cash Flow", i),
+                stock_based_compensation=safe_get(cfs, "Stock Based Compensation", i),
+                change_in_working_capital=safe_get(cfs, "Change In Working Capital", i),
+            ))
+
+        # --- Quarterly ---
+        num_quarters = len(bs_q.columns) if bs_q is not None and not bs_q.empty else 0
+        for i in range(num_quarters):
+            if not is_valid_row(bs_q, inc_q, cfs_q, i):
+                logger.debug("Skipping %s quarter %d — no critical data", ticker, i)
+                continue
+            fiscal_quarter = bs_q.columns[i].date()
+
+            result["balance_sheet_quarterly"].append(BalanceSheetQuarterly(
+                ticker=ticker,
+                fiscal_quarter=fiscal_quarter,
+                total_assets=safe_get(bs_q, "Total Assets", i),
+                total_liabilities=safe_get(bs_q, "Total Liabilities Net Minority Interest", i),
+                shareholders_equity=safe_get(bs_q, "Stockholders Equity", i),
+                current_assets=safe_get(bs_q, "Current Assets", i),
+                current_liabilities=safe_get(bs_q, "Current Liabilities", i),
+                cash=safe_get(bs_q, "Cash And Cash Equivalents", i),
+                inventory=safe_get(bs_q, "Inventory", i),
+                accounts_receivable=safe_get(bs_q, "Accounts Receivable", i),
+                total_debt=safe_get(bs_q, "Total Debt", i),
+                goodwill=safe_get(bs_q, "Goodwill", i),
+                other_intangible_assets=safe_get(bs_q, "Other Intangible Assets", i),
+            ))
+
+            result["income_statement_quarterly"].append(IncomeStatementQuarterly(
+                ticker=ticker,
+                fiscal_quarter=fiscal_quarter,
+                total_revenue=safe_get(inc_q, "Total Revenue", i),
+                cost_of_revenue=safe_get(inc_q, "Cost Of Revenue", i),
+                gross_profit=safe_get(inc_q, "Gross Profit", i),
+                research_and_development=safe_get(inc_q, "Research And Development", i),
+                operating_income=safe_get(inc_q, "Operating Income", i),
+                ebitda=safe_get(inc_q, "EBITDA", i),
+                net_income=safe_get(inc_q, "Net Income", i),
+                interest_expense=safe_get(inc_q, "Interest Expense", i),
+                tax_provision=safe_get(inc_q, "Tax Provision", i),
+                basic_eps=safe_get(inc_q, "Basic EPS", i),
+                diluted_eps=safe_get(inc_q, "Diluted EPS", i),
+            ))
+
+            result["cash_flow_quarterly"].append(CashFlowQuarterly(
+                ticker=ticker,
+                fiscal_quarter=fiscal_quarter,
+                operating_cash_flow=safe_get(cfs_q, "Operating Cash Flow", i),
+                capital_expenditure=safe_get(cfs_q, "Capital Expenditure", i),
+                depreciation_amortization=safe_get(cfs_q, "Depreciation And Amortization", i),
+                free_cash_flow=safe_get(cfs_q, "Free Cash Flow", i),
+                stock_based_compensation=safe_get(cfs_q, "Stock Based Compensation", i),
+                change_in_working_capital=safe_get(cfs_q, "Change In Working Capital", i),
+            ))
+
+        return result
+
+    except Exception as e:
+        logger.error("Error processing %s: %s", ticker, e)
+        return None
+
+
+def fetch_companies_from_sec(limit=100):
+    headers = {'User-Agent': "christofferdej.acct@gmail.com"}
+    response = requests.get(
+        "https://www.sec.gov/files/company_tickers.json",
+        headers=headers
+    )
+    data = pd.DataFrame.from_dict(response.json(), orient='index')
+    data['cik_str'] = data['cik_str'].astype(str).str.zfill(10)
+    return data[["ticker", "title", "cik_str"]].head(limit)
+
+
+def run_fetch(limit=100):
+    companies = fetch_companies_from_sec(limit)
+    results = []
+
+    rows = list(companies.itertuples(index=False))
+    for i in range(0, len(rows), BATCH_SIZE):
+        batch = rows[i:i + BATCH_SIZE]
+        logger.info("Fetching tickers %d–%d of %d", i + 1, i + len(batch), len(rows))
+        with ThreadPoolExecutor(max_workers=WORKERS) as executor:
+            batch_results = executor.map(
+                lambda row: fetch_ticker(row.ticker, row.title, row.cik_str),
+                batch
+            )
+            results.extend(r for r in batch_results if r is not None)
+        if i + BATCH_SIZE < len(rows):
+            time.sleep(DELAY_BETWEEN_BATCHES)
+
+    return results
