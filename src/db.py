@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_client() -> Client:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        raise RuntimeError("SUPABASE_URL and SUPABASE_KEY must be set in .env")
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -56,8 +58,12 @@ def upsert_cash_flow_quarterly(client: Client, rows: list, company_id: int):
 
 
 def get_processed_tickers(client: Client) -> set[str]:
-    response = client.table("companies").select("ticker").execute()
-    return {row["ticker"] for row in response.data}
+    try:
+        response = client.table("companies").select("ticker").execute()
+        return {row["ticker"] for row in response.data}
+    except Exception as e:
+        logger.error("Failed to fetch processed tickers from DB: %s", e)
+        raise
 
 
 def upsert_result(client: Client, result: dict):
