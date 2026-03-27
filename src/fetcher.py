@@ -28,13 +28,10 @@ def safe_get(df, row_name, col_index, default=None):
     return default
 
 
-def is_valid_row(bs, inc, cfs, i):
-    critical_fields = [
-        safe_get(bs, "Total Assets", i),
-        safe_get(inc, "Total Revenue", i),
-        safe_get(inc, "Net Income", i),
-    ]
-    return any(v is not None for v in critical_fields)
+def is_valid_row(bs, inc, i):
+    total_assets = safe_get(bs, "Total Assets", i)
+    net_income = safe_get(inc, "Net Income", i)
+    return total_assets is not None and net_income is not None
 
 
 @retry(
@@ -51,7 +48,7 @@ def fetch_ticker(ticker, name, cik):
     cfs   = cpy.cashflow;                  time.sleep(DELAY_BETWEEN_REQUESTS)
     bs_q  = cpy.quarterly_balance_sheet;   time.sleep(DELAY_BETWEEN_REQUESTS)
     inc_q = cpy.quarterly_income_stmt;     time.sleep(DELAY_BETWEEN_REQUESTS)
-    cfs_q = cpy.quarterly_cashflow
+    cfs_q = cpy.quarterly_cashflow;          time.sleep(DELAY_BETWEEN_REQUESTS)
 
     result = {
         "company": Company(ticker=ticker, name=name, cik=cik),
@@ -66,7 +63,7 @@ def fetch_ticker(ticker, name, cik):
     # --- Annual ---
     num_years = len(bs.columns) if bs is not None and not bs.empty else 0
     for i in range(num_years):
-        if not is_valid_row(bs, inc, cfs, i):
+        if not is_valid_row(bs, inc, i):
             logger.debug("Skipping %s annual year %d — no critical data", ticker, i)
             continue
         fiscal_year = bs.columns[i].date()
@@ -275,7 +272,7 @@ def fetch_ticker(ticker, name, cik):
     # --- Quarterly ---
     num_quarters = len(bs_q.columns) if bs_q is not None and not bs_q.empty else 0
     for i in range(num_quarters):
-        if not is_valid_row(bs_q, inc_q, cfs_q, i):
+        if not is_valid_row(bs_q, inc_q, i):
             logger.debug("Skipping %s quarter %d — no critical data", ticker, i)
             continue
         fiscal_quarter = bs_q.columns[i].date()
@@ -481,6 +478,10 @@ def fetch_ticker(ticker, name, cik):
             net_income_from_continuing_operations=safe_get(cfs_q, "Net Income From Continuing Operations", i),
         ))
 
+    if not result["balance_sheet_annual"]:
+        logger.warning("Skipping %s — no valid annual rows (missing Total Assets or Net Income)", ticker)
+        return None
+
     return result
 
 
@@ -514,7 +515,8 @@ def run_fetch(limit=25, exclude: set = None):
         for row in batch:
             try:
                 r = fetch_ticker(row.ticker, row.title, row.cik_str)
-                results.append(r)
+                if r is not None:
+                    results.append(r)
             except Exception as e:
                 logger.error("Failed to fetch %s after retries: %s", row.ticker, e)
         if i + BATCH_SIZE < len(rows):

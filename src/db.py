@@ -27,34 +27,23 @@ def _serialize_financial(models: list, company_id: int) -> list[dict]:
     return rows
 
 
+def _check_response(response, table_name: str):
+    if not response.data and response.data != []:
+        raise RuntimeError(f"Supabase upsert to '{table_name}' returned no data")
+
+
 def upsert_company(client: Client, company) -> int:
     data = company.model_dump(mode="json", exclude={"id"})
     response = client.table("companies").upsert(data, on_conflict="ticker").execute()
+    _check_response(response, "companies")
     return response.data[0]["id"]
 
 
-def upsert_balance_sheet_annual(client: Client, rows: list, company_id: int):
-    client.table("balance_sheet_annual").upsert(_serialize_financial(rows, company_id)).execute()
-
-
-def upsert_income_statement_annual(client: Client, rows: list, company_id: int):
-    client.table("income_statement_annual").upsert(_serialize_financial(rows, company_id)).execute()
-
-
-def upsert_cash_flow_annual(client: Client, rows: list, company_id: int):
-    client.table("cash_flow_annual").upsert(_serialize_financial(rows, company_id)).execute()
-
-
-def upsert_balance_sheet_quarterly(client: Client, rows: list, company_id: int):
-    client.table("balance_sheet_quarterly").upsert(_serialize_financial(rows, company_id)).execute()
-
-
-def upsert_income_statement_quarterly(client: Client, rows: list, company_id: int):
-    client.table("income_statement_quarterly").upsert(_serialize_financial(rows, company_id)).execute()
-
-
-def upsert_cash_flow_quarterly(client: Client, rows: list, company_id: int):
-    client.table("cash_flow_quarterly").upsert(_serialize_financial(rows, company_id)).execute()
+def _upsert_financial(client: Client, table: str, rows: list, company_id: int):
+    if not rows:
+        return
+    response = client.table(table).upsert(_serialize_financial(rows, company_id)).execute()
+    _check_response(response, table)
 
 
 def get_processed_tickers(client: Client) -> set[str]:
@@ -66,15 +55,31 @@ def get_processed_tickers(client: Client) -> set[str]:
         raise
 
 
+FINANCIAL_TABLES = [
+    "balance_sheet_annual",
+    "income_statement_annual",
+    "cash_flow_annual",
+    "balance_sheet_quarterly",
+    "income_statement_quarterly",
+    "cash_flow_quarterly",
+]
+
+
 def upsert_result(client: Client, result: dict):
     company_id = upsert_company(client, result["company"])
+    inserted_tables = []
     try:
-        upsert_balance_sheet_annual(client, result["balance_sheet_annual"], company_id)
-        upsert_income_statement_annual(client, result["income_statement_annual"], company_id)
-        upsert_cash_flow_annual(client, result["cash_flow_annual"], company_id)
-        upsert_balance_sheet_quarterly(client, result["balance_sheet_quarterly"], company_id)
-        upsert_income_statement_quarterly(client, result["income_statement_quarterly"], company_id)
-        upsert_cash_flow_quarterly(client, result["cash_flow_quarterly"], company_id)
+        for table in FINANCIAL_TABLES:
+            _upsert_financial(client, table, result[table], company_id)
+            inserted_tables.append(table)
     except Exception:
-        client.table("companies").delete().eq("id", company_id).execute()
+        for table in inserted_tables:
+            try:
+                client.table(table).delete().eq("company_id", company_id).execute()
+            except Exception as cleanup_err:
+                logger.error("Rollback failed for %s (company_id=%d): %s", table, company_id, cleanup_err)
+        try:
+            client.table("companies").delete().eq("id", company_id).execute()
+        except Exception as cleanup_err:
+            logger.error("Rollback failed for companies (id=%d): %s", company_id, cleanup_err)
         raise

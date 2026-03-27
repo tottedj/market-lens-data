@@ -1,10 +1,12 @@
 import logging
 import os
+from datetime import datetime
 from fetcher import run_fetch
 from db import get_client, get_processed_tickers, upsert_result
 
 _log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
 os.makedirs(_log_dir, exist_ok=True)
+_log_file = os.path.join(_log_dir, f"pipeline_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,7 +14,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(os.path.join(_log_dir, "pipeline.log"), encoding="utf-8"),
+        logging.FileHandler(_log_file, encoding="utf-8"),
     ],
 )
 logger = logging.getLogger(__name__)
@@ -27,12 +29,12 @@ def run_pipeline(limit=25):
 
     logger.info("Inserting %d companies into Supabase", len(results))
     for result in results:
-        ticker = result["company"].ticker
         try:
+            ticker = result["company"].ticker
             upsert_result(client, result)
             logger.info("Inserted %s", ticker)
         except Exception as e:
-            logger.error("Failed to insert %s: %s", ticker, e)
+            logger.error("Failed to insert result: %s", e)
 
     logger.info("Pipeline complete")
 
