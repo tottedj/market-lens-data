@@ -1,9 +1,11 @@
 import logging
+import os
 import time
 import pandas as pd
 import yfinance as yf
 import numpy as np
 import requests
+from dotenv import load_dotenv
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log, retry_if_exception_type
 
 from models import (
@@ -12,11 +14,30 @@ from models import (
     BalanceSheetQuarterly, IncomeStatementQuarterly, CashFlowQuarterly,
 )
 
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
+
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 50
 DELAY_BETWEEN_BATCHES = 2   # seconds — brief margin between batches
 DELAY_BETWEEN_REQUESTS = 1  # seconds — max 1 request/second to Yahoo
+
+
+class Throttle:
+    """Sleeps only the remaining time needed to maintain min_interval between calls."""
+    def __init__(self, min_interval: float = 1.0):
+        self.min_interval = min_interval
+        self.last_call = 0.0
+
+    def wait(self):
+        now = time.monotonic()
+        elapsed = now - self.last_call
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self.last_call = time.monotonic()
+
+
+_throttle = Throttle(DELAY_BETWEEN_REQUESTS)
 
 
 def safe_get(df, row_name, col_index, default=None):
@@ -35,7 +56,7 @@ def is_valid_row(bs, inc, i):
 
 
 @retry(
-    retry=retry_if_exception_type(requests.exceptions.RequestException),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, ConnectionError, IOError)),
     wait=wait_exponential(multiplier=1, min=2, max=30),
     stop=stop_after_attempt(3),
     before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -43,12 +64,12 @@ def is_valid_row(bs, inc, i):
 def fetch_ticker(ticker, name, cik):
     cpy = yf.Ticker(ticker)
 
-    bs    = cpy.balance_sheet;              time.sleep(DELAY_BETWEEN_REQUESTS)
-    inc   = cpy.income_stmt;               time.sleep(DELAY_BETWEEN_REQUESTS)
-    cfs   = cpy.cashflow;                  time.sleep(DELAY_BETWEEN_REQUESTS)
-    bs_q  = cpy.quarterly_balance_sheet;   time.sleep(DELAY_BETWEEN_REQUESTS)
-    inc_q = cpy.quarterly_income_stmt;     time.sleep(DELAY_BETWEEN_REQUESTS)
-    cfs_q = cpy.quarterly_cashflow;          time.sleep(DELAY_BETWEEN_REQUESTS)
+    _throttle.wait(); bs    = cpy.balance_sheet
+    _throttle.wait(); inc   = cpy.income_stmt
+    _throttle.wait(); cfs   = cpy.cashflow
+    _throttle.wait(); bs_q  = cpy.quarterly_balance_sheet
+    _throttle.wait(); inc_q = cpy.quarterly_income_stmt
+    _throttle.wait(); cfs_q = cpy.quarterly_cashflow
 
     result = {
         "company": Company(ticker=ticker, name=name, cik=cik),
@@ -482,11 +503,17 @@ def fetch_ticker(ticker, name, cik):
         logger.warning("Skipping %s — no valid annual rows (missing Total Assets or Net Income)", ticker)
         return None
 
+    annual_years = len(result["balance_sheet_annual"])
+    quarterly_periods = len(result["balance_sheet_quarterly"])
+    logger.info("Fetched %s — %d annual years, %d quarterly periods", ticker, annual_years, quarterly_periods)
     return result
 
 
 def fetch_companies_from_sec(limit=25, exclude: set = None):
-    headers = {'User-Agent': "christofferdej.acct@gmail.com"}
+    user_agent = os.getenv("SEC_USER_AGENT")
+    if not user_agent:
+        raise RuntimeError("SEC_USER_AGENT must be set in .env")
+    headers = {'User-Agent': user_agent}
     try:
         response = requests.get(
             "https://www.sec.gov/files/company_tickers.json",
@@ -507,19 +534,28 @@ def fetch_companies_from_sec(limit=25, exclude: set = None):
 def run_fetch(limit=25, exclude: set = None):
     companies = fetch_companies_from_sec(limit, exclude=exclude)
     results = []
+    skipped = 0
+    failed = 0
 
     rows = list(companies.itertuples(index=False))
+    logger.info("Fetching %d tickers from SEC (excluded %d already processed)",
+                len(rows), limit - len(rows) if len(rows) < limit else 0)
     for i in range(0, len(rows), BATCH_SIZE):
         batch = rows[i:i + BATCH_SIZE]
-        logger.info("Fetching tickers %d–%d of %d", i + 1, i + len(batch), len(rows))
+        logger.info("Fetching batch %d–%d of %d", i + 1, i + len(batch), len(rows))
         for row in batch:
             try:
                 r = fetch_ticker(row.ticker, row.title, row.cik_str)
                 if r is not None:
                     results.append(r)
+                else:
+                    skipped += 1
             except Exception as e:
+                failed += 1
                 logger.error("Failed to fetch %s after retries: %s", row.ticker, e)
         if i + BATCH_SIZE < len(rows):
             time.sleep(DELAY_BETWEEN_BATCHES)
 
+    logger.info("Fetch complete: %d succeeded, %d skipped (no data), %d failed",
+                len(results), skipped, failed)
     return results

@@ -28,3 +28,10 @@ Environment variables go in `.env` (currently empty). Expected keys include `SUP
 - **`tenacity`** — retry logic for external API calls
 - **`rich`** — terminal output formatting
 - **`strictyaml`** — configuration file parsing
+
+## Database Safety Rules
+
+- **Read-only access**: Never execute INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER, or any other write/destructive SQL operations against the Supabase database via MCP tools.
+- Only use SELECT queries and read-only operations (e.g., `list_tables`, `list_migrations`, `get_logs`).
+- Always use `SUPABASE_ANON_PUBLIC_KEY` when querying, never the `service_role` key.
+- If a task requires writing to the database, ask the user for explicit confirmation first and explain exactly what will be written.

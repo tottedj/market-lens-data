@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from datetime import datetime
 from fetcher import run_fetch
 from db import get_client, get_processed_tickers, upsert_result
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def run_pipeline(limit=25):
+    t_start = time.monotonic()
     client = get_client()
     processed = get_processed_tickers(client)
     logger.info("Starting pipeline: %d already processed, fetching next %d", len(processed), limit)
@@ -28,15 +30,21 @@ def run_pipeline(limit=25):
     results = run_fetch(limit, exclude=processed)
 
     logger.info("Inserting %d companies into Supabase", len(results))
+    inserted = 0
+    insert_failed = 0
     for result in results:
+        ticker = result["company"].ticker
         try:
-            ticker = result["company"].ticker
             upsert_result(client, result)
+            inserted += 1
             logger.info("Inserted %s", ticker)
         except Exception as e:
-            logger.error("Failed to insert result: %s", e)
+            insert_failed += 1
+            logger.error("Failed to insert %s: %s", ticker, e)
 
-    logger.info("Pipeline complete")
+    elapsed = time.monotonic() - t_start
+    logger.info("Pipeline complete in %.1fs — %d fetched, %d inserted, %d insert failures",
+                elapsed, len(results), inserted, insert_failed)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,15 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 logger = logging.getLogger(__name__)
 
+FINANCIAL_TABLES = [
+    "balance_sheet_annual",
+    "income_statement_annual",
+    "cash_flow_annual",
+    "balance_sheet_quarterly",
+    "income_statement_quarterly",
+    "cash_flow_quarterly",
+]
+
 
 def get_client() -> Client:
     if not SUPABASE_URL or not SUPABASE_KEY:
@@ -17,33 +26,27 @@ def get_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-def _serialize_financial(models: list, company_id: int) -> list[dict]:
+def _serialize_financial_rows(models: list) -> list[dict]:
+    """Convert Pydantic models to dicts, stripping the ticker field."""
     rows = []
     for m in models:
         d = m.model_dump(mode="json")
         d.pop("ticker")
-        d["company_id"] = company_id
         rows.append(d)
     return rows
 
 
-def _check_response(response, table_name: str):
-    if not response.data and response.data != []:
-        raise RuntimeError(f"Supabase upsert to '{table_name}' returned no data")
-
-
-def upsert_company(client: Client, company) -> int:
-    data = company.model_dump(mode="json", exclude={"id"})
-    response = client.table("companies").upsert(data, on_conflict="ticker").execute()
-    _check_response(response, "companies")
-    return response.data[0]["id"]
-
-
-def _upsert_financial(client: Client, table: str, rows: list, company_id: int):
-    if not rows:
-        return
-    response = client.table(table).upsert(_serialize_financial(rows, company_id)).execute()
-    _check_response(response, table)
+def _build_rpc_payload(result: dict) -> dict:
+    """Build the JSONB payload expected by the upsert_company_financials RPC."""
+    company = result["company"]
+    payload = {
+        "ticker": company.ticker,
+        "name": company.name,
+        "cik": company.cik,
+    }
+    for table in FINANCIAL_TABLES:
+        payload[table] = _serialize_financial_rows(result.get(table, []))
+    return payload
 
 
 def get_processed_tickers(client: Client) -> set[str]:
@@ -55,31 +58,12 @@ def get_processed_tickers(client: Client) -> set[str]:
         raise
 
 
-FINANCIAL_TABLES = [
-    "balance_sheet_annual",
-    "income_statement_annual",
-    "cash_flow_annual",
-    "balance_sheet_quarterly",
-    "income_statement_quarterly",
-    "cash_flow_quarterly",
-]
-
-
-def upsert_result(client: Client, result: dict):
-    company_id = upsert_company(client, result["company"])
-    inserted_tables = []
-    try:
-        for table in FINANCIAL_TABLES:
-            _upsert_financial(client, table, result[table], company_id)
-            inserted_tables.append(table)
-    except Exception:
-        for table in inserted_tables:
-            try:
-                client.table(table).delete().eq("company_id", company_id).execute()
-            except Exception as cleanup_err:
-                logger.error("Rollback failed for %s (company_id=%d): %s", table, company_id, cleanup_err)
-        try:
-            client.table("companies").delete().eq("id", company_id).execute()
-        except Exception as cleanup_err:
-            logger.error("Rollback failed for companies (id=%d): %s", company_id, cleanup_err)
-        raise
+def upsert_result(client: Client, result: dict) -> int:
+    """Upsert a single company + all its financials via a database transaction (RPC)."""
+    ticker = result["company"].ticker
+    payload = _build_rpc_payload(result)
+    row_counts = {t: len(payload[t]) for t in FINANCIAL_TABLES if payload[t]}
+    logger.debug("RPC payload for %s: %s", ticker, row_counts)
+    response = client.rpc("upsert_company_financials", {"payload": payload}).execute()
+    logger.debug("RPC returned company_id=%s for %s", response.data, ticker)
+    return response.data
