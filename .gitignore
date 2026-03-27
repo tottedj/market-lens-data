@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Used for testing purposes, should not be committed
+kladd.py
+kladd.txt
+
+# Runtime logs
+logs/

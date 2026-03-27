@@ -15,43 +15,60 @@ def get_client() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
-def _serialize(models: list) -> list[dict]:
-    return [m.model_dump(mode="json") for m in models]
+def _serialize_financial(models: list, company_id: int) -> list[dict]:
+    rows = []
+    for m in models:
+        d = m.model_dump(mode="json")
+        d.pop("ticker")
+        d["company_id"] = company_id
+        rows.append(d)
+    return rows
 
 
-def upsert_company(client: Client, company):
-    client.table("companies").upsert(company.model_dump(mode="json")).execute()
+def upsert_company(client: Client, company) -> int:
+    data = company.model_dump(mode="json", exclude={"id"})
+    response = client.table("companies").upsert(data, on_conflict="ticker").execute()
+    return response.data[0]["id"]
 
 
-def upsert_balance_sheet_annual(client: Client, rows: list):
-    client.table("balance_sheet_annual").upsert(_serialize(rows)).execute()
+def upsert_balance_sheet_annual(client: Client, rows: list, company_id: int):
+    client.table("balance_sheet_annual").upsert(_serialize_financial(rows, company_id)).execute()
 
 
-def upsert_income_statement_annual(client: Client, rows: list):
-    client.table("income_statement_annual").upsert(_serialize(rows)).execute()
+def upsert_income_statement_annual(client: Client, rows: list, company_id: int):
+    client.table("income_statement_annual").upsert(_serialize_financial(rows, company_id)).execute()
 
 
-def upsert_cash_flow_annual(client: Client, rows: list):
-    client.table("cash_flow_annual").upsert(_serialize(rows)).execute()
+def upsert_cash_flow_annual(client: Client, rows: list, company_id: int):
+    client.table("cash_flow_annual").upsert(_serialize_financial(rows, company_id)).execute()
 
 
-def upsert_balance_sheet_quarterly(client: Client, rows: list):
-    client.table("balance_sheet_quarterly").upsert(_serialize(rows)).execute()
+def upsert_balance_sheet_quarterly(client: Client, rows: list, company_id: int):
+    client.table("balance_sheet_quarterly").upsert(_serialize_financial(rows, company_id)).execute()
 
 
-def upsert_income_statement_quarterly(client: Client, rows: list):
-    client.table("income_statement_quarterly").upsert(_serialize(rows)).execute()
+def upsert_income_statement_quarterly(client: Client, rows: list, company_id: int):
+    client.table("income_statement_quarterly").upsert(_serialize_financial(rows, company_id)).execute()
 
 
-def upsert_cash_flow_quarterly(client: Client, rows: list):
-    client.table("cash_flow_quarterly").upsert(_serialize(rows)).execute()
+def upsert_cash_flow_quarterly(client: Client, rows: list, company_id: int):
+    client.table("cash_flow_quarterly").upsert(_serialize_financial(rows, company_id)).execute()
 
 
-def insert_result(client: Client, result: dict):
-    upsert_company(client, result["company"])
-    upsert_balance_sheet_annual(client, result["balance_sheet_annual"])
-    upsert_income_statement_annual(client, result["income_statement_annual"])
-    upsert_cash_flow_annual(client, result["cash_flow_annual"])
-    upsert_balance_sheet_quarterly(client, result["balance_sheet_quarterly"])
-    upsert_income_statement_quarterly(client, result["income_statement_quarterly"])
-    upsert_cash_flow_quarterly(client, result["cash_flow_quarterly"])
+def get_processed_tickers(client: Client) -> set[str]:
+    response = client.table("companies").select("ticker").execute()
+    return {row["ticker"] for row in response.data}
+
+
+def upsert_result(client: Client, result: dict):
+    company_id = upsert_company(client, result["company"])
+    try:
+        upsert_balance_sheet_annual(client, result["balance_sheet_annual"], company_id)
+        upsert_income_statement_annual(client, result["income_statement_annual"], company_id)
+        upsert_cash_flow_annual(client, result["cash_flow_annual"], company_id)
+        upsert_balance_sheet_quarterly(client, result["balance_sheet_quarterly"], company_id)
+        upsert_income_statement_quarterly(client, result["income_statement_quarterly"], company_id)
+        upsert_cash_flow_quarterly(client, result["cash_flow_quarterly"], company_id)
+    except Exception:
+        client.table("companies").delete().eq("id", company_id).execute()
+        raise
