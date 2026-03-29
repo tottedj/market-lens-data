@@ -64,6 +64,12 @@ def is_valid_row(bs, inc, i):
 def fetch_ticker(ticker, name, cik):
     cpy = yf.Ticker(ticker)
 
+    try:
+        _throttle.wait(); info = cpy.info or {}
+    except Exception:
+        logger.warning("Failed to fetch info for %s, continuing without it", ticker)
+        info = {}
+
     _throttle.wait(); bs    = cpy.balance_sheet
     _throttle.wait(); inc   = cpy.income_stmt
     _throttle.wait(); cfs   = cpy.cashflow
@@ -72,7 +78,22 @@ def fetch_ticker(ticker, name, cik):
     _throttle.wait(); cfs_q = cpy.quarterly_cashflow
 
     result = {
-        "company": Company(ticker=ticker, name=name, cik=cik),
+        "company": Company(
+            ticker=ticker,
+            name=name,
+            cik=cik,
+            sector=info.get("sector"),
+            industry=info.get("industry"),
+            country=info.get("country"),
+            city=info.get("city"),
+            state=info.get("state"),
+            website=info.get("website"),
+            description=info.get("longBusinessSummary"),
+            full_time_employees=info.get("fullTimeEmployees"),
+            exchange=info.get("exchange"),
+            currency=info.get("financialCurrency"),
+            quote_type=info.get("quoteType"),
+        ),
         "balance_sheet_annual":       [],
         "income_statement_annual":    [],
         "cash_flow_annual":           [],

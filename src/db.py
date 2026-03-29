@@ -43,6 +43,17 @@ def _build_rpc_payload(result: dict) -> dict:
         "ticker": company.ticker,
         "name": company.name,
         "cik": company.cik,
+        "sector": company.sector,
+        "industry": company.industry,
+        "country": company.country,
+        "city": company.city,
+        "state": company.state,
+        "website": company.website,
+        "description": company.description,
+        "full_time_employees": company.full_time_employees,
+        "exchange": company.exchange,
+        "currency": company.currency,
+        "quote_type": company.quote_type,
     }
     for table in FINANCIAL_TABLES:
         payload[table] = _serialize_financial_rows(result.get(table, []))

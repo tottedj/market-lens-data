@@ -10,15 +10,40 @@ DECLARE
   v_company_id integer;
 BEGIN
   -- 1. Upsert company
-  INSERT INTO companies (ticker, name, cik)
+  INSERT INTO companies (
+    ticker, name, cik, sector, industry, country, city, state,
+    website, description, full_time_employees, exchange, currency, quote_type
+  )
   VALUES (
     payload->>'ticker',
     payload->>'name',
-    payload->>'cik'
+    payload->>'cik',
+    payload->>'sector',
+    payload->>'industry',
+    payload->>'country',
+    payload->>'city',
+    payload->>'state',
+    payload->>'website',
+    payload->>'description',
+    (payload->>'full_time_employees')::integer,
+    payload->>'exchange',
+    payload->>'currency',
+    payload->>'quote_type'
   )
   ON CONFLICT (ticker) DO UPDATE SET
     name = EXCLUDED.name,
-    cik = EXCLUDED.cik
+    cik = EXCLUDED.cik,
+    sector = EXCLUDED.sector,
+    industry = EXCLUDED.industry,
+    country = EXCLUDED.country,
+    city = EXCLUDED.city,
+    state = EXCLUDED.state,
+    website = EXCLUDED.website,
+    description = EXCLUDED.description,
+    full_time_employees = EXCLUDED.full_time_employees,
+    exchange = EXCLUDED.exchange,
+    currency = EXCLUDED.currency,
+    quote_type = EXCLUDED.quote_type
   RETURNING id INTO v_company_id;
 
   -- 2. Balance sheet annual
