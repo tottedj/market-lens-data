@@ -7,6 +7,17 @@ class Company(BaseModel):
     ticker: str
     name: str | None
     cik: str | None
+    sector: str | None = None
+    industry: str | None = None
+    country: str | None = None
+    city: str | None = None
+    state: str | None = None
+    website: str | None = None
+    description: str | None = None
+    full_time_employees: int | None = None
+    exchange: str | None = None
+    currency: str | None = None
+    quote_type: str | None = None
 
 
 class BalanceSheetAnnual(BaseModel):
