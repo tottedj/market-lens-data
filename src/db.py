@@ -1,6 +1,8 @@
 import os
 import logging
+from httpx import ConnectError, TimeoutException
 from supabase import create_client, Client
+from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log, retry_if_exception_type
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +37,7 @@ def _serialize_financial_rows(models: list) -> list[dict]:
 def _build_rpc_payload(result: dict) -> dict:
     """Build the JSONB payload expected by the upsert_company_financials RPC."""
     company = result["company"]
-    payload = {
-        "ticker": company.ticker,
-        "name": company.name,
-        "cik": company.cik,
-        "sector": company.sector,
-        "industry": company.industry,
-        "country": company.country,
-        "city": company.city,
-        "state": company.state,
-        "website": company.website,
-        "description": company.description,
-        "full_time_employees": company.full_time_employees,
-        "exchange": company.exchange,
-        "currency": company.currency,
-        "quote_type": company.quote_type,
-    }
+    payload = company.model_dump(mode="json", exclude={"id"})
     for table in FINANCIAL_TABLES:
         payload[table] = _serialize_financial_rows(result.get(table, []))
     return payload
@@ -65,6 +52,12 @@ def get_processed_tickers(client: Client) -> set[str]:
         raise
 
 
+@retry(
+    retry=retry_if_exception_type((ConnectError, TimeoutException, IOError)),
+    wait=wait_exponential(multiplier=1, min=2, max=15),
+    stop=stop_after_attempt(3),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
 def upsert_result(client: Client, result: dict) -> int:
     """Upsert a single company + all its financials via a database transaction (RPC)."""
     ticker = result["company"].ticker

@@ -125,7 +125,8 @@ def _parse_statements(ticker, bs, inc, cfs, bs_model, inc_model, cf_model, date_
 
         bs_rows.append(_build_row(bs, bs_i, ticker, bs_model, date_field, dt))
         inc_rows.append(_build_row(inc, inc_i, ticker, inc_model, date_field, dt))
-        cf_rows.append(_build_row(cfs, cfs_i, ticker, cf_model, date_field, dt))
+        if cfs_i is not None:
+            cf_rows.append(_build_row(cfs, cfs_i, ticker, cf_model, date_field, dt))
 
     return bs_rows, inc_rows, cf_rows
 
@@ -235,7 +236,7 @@ def run_fetch(limit=25, exclude: set = None):
 
     rows = list(companies.itertuples(index=False))
     logger.info("Fetching %d tickers from SEC (excluded %d already processed)",
-                len(rows), limit - len(rows) if len(rows) < limit else 0)
+                len(rows), len(exclude) if exclude else 0)
     for i in range(0, len(rows), BATCH_SIZE):
         batch = rows[i:i + BATCH_SIZE]
         logger.info("Fetching batch %d–%d of %d", i + 1, i + len(batch), len(rows))

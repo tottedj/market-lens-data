@@ -1,6 +1,6 @@
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
@@ -12,9 +12,17 @@ from .db import get_client, get_processed_tickers, upsert_result
 logger = logging.getLogger(__name__)
 
 
+def _cleanup_old_logs(log_dir: Path, max_age_days: int = 30):
+    cutoff = datetime.now().timestamp() - timedelta(days=max_age_days).total_seconds()
+    for f in log_dir.glob("pipeline_*.log"):
+        if f.stat().st_mtime < cutoff:
+            f.unlink()
+
+
 def _setup_logging():
     log_dir = Path(__file__).resolve().parent.parent / "logs"
     log_dir.mkdir(exist_ok=True)
+    _cleanup_old_logs(log_dir)
     log_file = log_dir / f"pipeline_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.log"
     logging.basicConfig(
         level=logging.INFO,
