@@ -264,4 +264,4 @@ def run_fetch(limit=25, exclude: set = None):
         logger.info("Skipped tickers: %s", ", ".join(skipped_tickers))
     if failed_tickers:
         logger.warning("Failed tickers: %s", ", ".join(failed_tickers))
-    return results
+    return results, skipped_tickers

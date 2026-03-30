@@ -7,7 +7,7 @@ import click
 from dotenv import load_dotenv
 
 from .fetcher import run_fetch
-from .db import get_client, get_processed_tickers, upsert_result
+from .db import get_client, get_processed_tickers, get_skipped_tickers, insert_skipped_tickers, upsert_result
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +45,16 @@ def main(limit):
     t_start = time.monotonic()
     client = get_client()
     processed = get_processed_tickers(client)
-    logger.info("Starting pipeline: %d already processed, fetching next %d", len(processed), limit)
+    skipped = get_skipped_tickers(client)
+    exclude = processed | skipped
+    logger.info("Starting pipeline: %d already processed, %d skipped, fetching next %d",
+                len(processed), len(skipped), limit)
 
-    results = run_fetch(limit, exclude=processed)
+    results, newly_skipped = run_fetch(limit, exclude=exclude)
+
+    if newly_skipped:
+        insert_skipped_tickers(client, newly_skipped, reason="no valid annual rows")
+        logger.info("Saved %d newly skipped tickers: %s", len(newly_skipped), ", ".join(newly_skipped))
 
     if not results:
         logger.warning("No results to insert — check fetch logs above")

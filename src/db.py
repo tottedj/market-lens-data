@@ -60,6 +60,28 @@ def get_processed_tickers(client: Client) -> set[str]:
     stop=stop_after_attempt(3),
     before_sleep=before_sleep_log(logger, logging.WARNING),
 )
+def get_skipped_tickers(client: Client) -> set[str]:
+    response = client.table("skipped_tickers").select("ticker").execute()
+    return {row["ticker"] for row in response.data}
+
+
+@retry(
+    retry=retry_if_exception_type((ConnectError, TimeoutException, IOError)),
+    wait=wait_exponential(multiplier=1, min=2, max=15),
+    stop=stop_after_attempt(3),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
+def insert_skipped_tickers(client: Client, tickers: list[str], reason: str):
+    rows = [{"ticker": t, "reason": reason} for t in tickers]
+    client.table("skipped_tickers").upsert(rows, on_conflict="ticker").execute()
+
+
+@retry(
+    retry=retry_if_exception_type((ConnectError, TimeoutException, IOError)),
+    wait=wait_exponential(multiplier=1, min=2, max=15),
+    stop=stop_after_attempt(3),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
 def upsert_result(client: Client, result: dict) -> int:
     """Upsert a single company + all its financials via a database transaction (RPC)."""
     ticker = result["company"].ticker
