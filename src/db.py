@@ -43,13 +43,15 @@ def _build_rpc_payload(result: dict) -> dict:
     return payload
 
 
+@retry(
+    retry=retry_if_exception_type((ConnectError, TimeoutException, IOError)),
+    wait=wait_exponential(multiplier=1, min=2, max=15),
+    stop=stop_after_attempt(3),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+)
 def get_processed_tickers(client: Client) -> set[str]:
-    try:
-        response = client.table("companies").select("ticker").execute()
-        return {row["ticker"] for row in response.data}
-    except Exception as e:
-        logger.error("Failed to fetch processed tickers from DB: %s", e)
-        raise
+    response = client.table("companies").select("ticker").execute()
+    return {row["ticker"] for row in response.data}
 
 
 @retry(
