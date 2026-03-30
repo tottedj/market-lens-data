@@ -12,11 +12,10 @@ from .db import get_client, get_processed_tickers, get_skipped_tickers, insert_s
 logger = logging.getLogger(__name__)
 
 
-def _cleanup_old_logs(log_dir: Path, max_age_days: int = 30):
-    cutoff = datetime.now().timestamp() - timedelta(days=max_age_days).total_seconds()
-    for f in log_dir.glob("pipeline_*.log"):
-        if f.stat().st_mtime < cutoff:
-            f.unlink()
+def _cleanup_old_logs(log_dir: Path, max_logs: int = 30):
+    logs = sorted(log_dir.glob("pipeline_*.log"), key=lambda f: f.stat().st_mtime)
+    for f in logs[:-max_logs]:
+        f.unlink()
 
 
 def _setup_logging():
